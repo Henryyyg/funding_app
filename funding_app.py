@@ -512,7 +512,7 @@ with colA:
         st.caption("Target range not available in latest EFFR row.")
 
 with colB:
-    st.caption("Overnight Rates: EFFR, OBFR · Secured Rates: TGCR, BGCR, SOFR")
+    st.caption("Unsecured Rates: EFFR, OBFR · Secured Rates: TGCR, BGCR, SOFR")
 
 overnight_keys = ["EFFR", "OBFR"]
 secured_keys = ["TGCR", "BGCR", "SOFR"]
