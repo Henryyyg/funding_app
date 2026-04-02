@@ -531,12 +531,12 @@ def highlight_outside_target(val, lower, upper):
         return "background-color: #dde8ff"
     return ""
 
-st.subheader("Unsecured Funding Rates (last 10, T-1)")
+st.subheader("Overnight Rates (last 10)")
 overnight_tbl = make_table(dfs, overnight_keys)
 overnight_display = format_table_for_display(overnight_tbl)
 
 if pd.notna(target_from) and pd.notna(target_to):
-    styled = overnight_display.style.applymap(
+    styled = overnight_display.style.map(
         lambda v: highlight_outside_target(v, target_from, target_to),
         subset=["EFFR Rate (%)", "OBFR Rate (%)"]
     )
