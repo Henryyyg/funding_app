@@ -633,6 +633,58 @@ def build_tbill_purchase_table(last_n: int = 10) -> pd.DataFrame:
     })
 
     return out.reset_index(drop=True)
+### T Bill Headlines ###
+
+def build_tbill_purchase_headline():
+    df = fetch_tbill_purchase_details(days_back=180)
+
+    op_col = pick_col_contains(df, ["operation", "type"])
+    date_col = pick_col_contains(df, ["operation", "date"])
+    maturity_col = pick_col_contains(df, ["maturity"])
+    submitted_col = pick_col_contains(df, ["submitted"])
+    accepted_col = pick_col_contains(df, ["accepted"])
+    operation_id_col = pick_col_contains(df, ["operation", "id"])
+
+    if op_col is None or date_col is None or submitted_col is None or accepted_col is None:
+        return "NY Fed T-Bill Purchases: Pending"
+
+    df = df[df[op_col].astype(str).str.contains("Outright Bill Purchase", case=False, na=False)]
+
+    if "Note" in df.columns:
+        df = df[~df["Note"].astype(str).str.contains("small value", case=False, na=False)]
+    if "Operation Method" in df.columns:
+        df = df[~df["Operation Method"].astype(str).str.contains("small value", case=False, na=False)]
+
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df[submitted_col] = pd.to_numeric(df[submitted_col], errors="coerce")
+    df[accepted_col] = pd.to_numeric(df[accepted_col], errors="coerce")
+    df = df.dropna(subset=[date_col]).sort_values(date_col, ascending=False)
+
+    if df.empty:
+        return "NY Fed T-Bill Purchases: Pending"
+
+    if operation_id_col:
+        df = df.drop_duplicates(subset=[operation_id_col], keep="first")
+    else:
+        df = df.drop_duplicates(
+            subset=[date_col, op_col, maturity_col, submitted_col, accepted_col],
+            keep="first"
+        )
+
+    latest = df.iloc[0]
+
+    tenor = fmt_tenor_range(latest[date_col], latest[maturity_col]) if maturity_col else "Bills"
+    tenor = tenor.replace(" bills", "").replace(" bill", "")
+
+    accepted = float(latest[accepted_col])
+    submitted = float(latest[submitted_col])
+    offer_cover = submitted / accepted if accepted else np.nan
+
+    return (
+        f"NY Fed T-Bill Purchases ({tenor}): "
+        f"Accepts USD {accepted / 1000:.2f}bln of USD {submitted / 1000:.2f}bln offered; "
+        f"Offer-to-cover {offer_cover:.2f}x"
+    )
 # -----------------------
 # Streamlit UI
 # -----------------------
@@ -747,6 +799,7 @@ t1_lines = [
 
 t0_lines = [
     build_rrp_headline(),
+    build_tbill_purchase_headline(),
 ]
 t0_lines.extend(build_repo_headlines_am_pm())
 
