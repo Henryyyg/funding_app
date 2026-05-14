@@ -4,6 +4,7 @@ import requests
 from io import StringIO
 from datetime import datetime
 import streamlit as st
+from io import StringIO, BytesIO
 
 # -----------------------
 # Global Headers (must be defined before fetch_ops_csv uses it)
@@ -489,6 +490,150 @@ def build_repo_headlines_am_pm():
     return final
 
 # -----------------------
+# NY Fed Treasury Bill Purchases
+# -----------------------
+
+def fetch_tbill_purchase_details(days_back: int = 120) -> pd.DataFrame:
+    end = pd.Timestamp.today()
+    start = end - pd.Timedelta(days=days_back)
+
+    url = "https://markets.newyorkfed.org/api/tsy/all/results/details/search.xlsx"
+    params = {
+        "startDate": start.strftime("%m/%d/%Y"),
+        "endDate": end.strftime("%m/%d/%Y"),
+        "securityType": "treasury",
+    }
+
+    r = requests.get(url, params=params, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+
+    df = pd.read_excel(BytesIO(r.content))
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def pick_col_contains(df, keywords):
+    for c in df.columns:
+        cl = str(c).lower()
+        if all(k.lower() in cl for k in keywords):
+            return c
+    return None
+
+
+def fmt_mln_to_bln(x):
+    if pd.isna(x):
+        return ""
+    return f"USD {float(x) / 1000:.2f}bln"
+
+
+def month_diff(start, end):
+    """Approximate months between two dates."""
+    start = pd.to_datetime(start)
+    end = pd.to_datetime(end)
+    days = (end - start).days
+    return max(0, round(days / 30))
+
+def fmt_tenor_range(operation_date, maturity_text):
+    """
+    Converts maturity range like '06/11/2026 - 09/03/2026'
+    into approximate tenor range like '1-4 month bills'.
+    """
+    if pd.isna(maturity_text):
+        return ""
+
+    txt = str(maturity_text).strip()
+
+    # Handle maturity range
+    if " - " in txt:
+        parts = txt.split(" - ")
+        if len(parts) == 2:
+            start_mat = pd.to_datetime(parts[0], errors="coerce")
+            end_mat = pd.to_datetime(parts[1], errors="coerce")
+
+            if pd.notna(start_mat) and pd.notna(end_mat):
+                start_m = month_diff(operation_date, start_mat)
+                end_m = month_diff(operation_date, end_mat)
+
+                if start_m == end_m:
+                    return f"{start_m}-month bills"
+                return f"{start_m}-{end_m} month bills"
+
+    # Handle single maturity
+    mat = pd.to_datetime(txt, errors="coerce")
+    if pd.notna(mat):
+        m = month_diff(operation_date, mat)
+        return f"{m}-month bill"
+
+    return ""
+
+
+def fmt_offer_to_cover(submitted, accepted):
+    if pd.isna(submitted) or pd.isna(accepted) or float(accepted) == 0:
+        return ""
+    return f"{float(submitted) / float(accepted):.2f}x"
+
+
+def build_tbill_purchase_table(last_n: int = 10) -> pd.DataFrame:
+    df = fetch_tbill_purchase_details(days_back=180)
+
+    op_col = pick_col_contains(df, ["operation", "type"])
+    date_col = pick_col_contains(df, ["operation", "date"])
+    maturity_col = pick_col_contains(df, ["maturity"])
+    submitted_col = pick_col_contains(df, ["submitted"])
+    accepted_col = pick_col_contains(df, ["accepted"])
+    operation_id_col = pick_col_contains(df, ["operation", "id"])
+
+    if op_col is None or date_col is None:
+        return pd.DataFrame({"Error": ["Could not find Treasury operation columns."]})
+
+    # Outright Bill Purchases only
+    df = df[df[op_col].astype(str).str.contains("Outright Bill Purchase", case=False, na=False)]
+
+    # Exclude Small Value Exercises
+    if "Note" in df.columns:
+        df = df[~df["Note"].astype(str).str.contains("small value", case=False, na=False)]
+    if "Operation Method" in df.columns:
+        df = df[~df["Operation Method"].astype(str).str.contains("small value", case=False, na=False)]
+
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+
+    if submitted_col:
+        df[submitted_col] = pd.to_numeric(df[submitted_col], errors="coerce")
+    if accepted_col:
+        df[accepted_col] = pd.to_numeric(df[accepted_col], errors="coerce")
+
+    df = df.dropna(subset=[date_col])
+
+    # Deduplicate: one row per operation
+    if operation_id_col:
+        df = df.drop_duplicates(subset=[operation_id_col], keep="first")
+    else:
+        df = df.drop_duplicates(
+            subset=[date_col, op_col, maturity_col, submitted_col, accepted_col],
+            keep="first"
+        )
+
+    df = df.sort_values(date_col, ascending=False).head(last_n)
+
+    out = pd.DataFrame({
+        "Date": df[date_col].dt.date.astype(str),
+        "Operation": df[op_col],
+        "Bill Maturity": df[maturity_col].astype(str) if maturity_col else "",
+        "Tenor": df.apply(
+            lambda r: fmt_tenor_range(r[date_col], r[maturity_col]) if maturity_col else "",
+            axis=1
+        ),
+        "Amt Submitted": df[submitted_col].map(fmt_mln_to_bln) if submitted_col else "",
+        "Amt Accepted": df[accepted_col].map(fmt_mln_to_bln) if accepted_col else "",
+        "Offer/Cover": df.apply(
+            lambda r: fmt_offer_to_cover(r[submitted_col], r[accepted_col])
+            if submitted_col and accepted_col else "",
+            axis=1
+        ),
+    })
+
+    return out.reset_index(drop=True)
+# -----------------------
 # Streamlit UI
 # -----------------------
 st.set_page_config(page_title="Funding Snapshot", layout="wide")
@@ -531,12 +676,12 @@ def highlight_outside_target(val, lower, upper):
         return "background-color: #dde8ff"
     return ""
 
-st.subheader("Overnight Rates (last 10)")
+st.subheader("Unsecured Funding Rates (last 10, T-1)")
 overnight_tbl = make_table(dfs, overnight_keys)
 overnight_display = format_table_for_display(overnight_tbl)
 
 if pd.notna(target_from) and pd.notna(target_to):
-    styled = overnight_display.style.map(
+    styled = overnight_display.style.applymap(
         lambda v: highlight_outside_target(v, target_from, target_to),
         subset=["EFFR Rate (%)", "OBFR Rate (%)"]
     )
@@ -555,6 +700,10 @@ st.dataframe(rrp_tbl, use_container_width=True)
 st.subheader("NY Fed Repo Operations (T-0)")
 repo_tbl = build_repo_table(last_n_days=10)
 st.dataframe(repo_tbl, use_container_width=True)
+
+st.subheader("NY Fed T-Bill Purchases")
+tbill_tbl = build_tbill_purchase_table(last_n=20)
+st.dataframe(tbill_tbl, use_container_width=True)
 
 with st.expander("Rate & Operations Definitions"):
     st.markdown("""
