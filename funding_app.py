@@ -681,10 +681,10 @@ overnight_tbl = make_table(dfs, overnight_keys)
 overnight_display = format_table_for_display(overnight_tbl)
 
 if pd.notna(target_from) and pd.notna(target_to):
-    styled = overnight_display.style.applymap(
-        lambda v: highlight_outside_target(v, target_from, target_to),
-        subset=["EFFR Rate (%)", "OBFR Rate (%)"]
-    )
+    styled = overnight_display.style.map(
+    lambda v: highlight_outside_target(v, target_from, target_to),
+    subset=["EFFR Rate (%)", "OBFR Rate (%)"]
+)
     st.dataframe(styled, use_container_width=True)
 else:
     st.dataframe(overnight_display, use_container_width=True)
